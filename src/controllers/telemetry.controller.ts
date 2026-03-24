@@ -2,7 +2,7 @@ import { Request, Response, NextFunction } from "express";
 import {
   getHistoricalTelemetryByCollar,
   getRealtimeTelemetryByCollar,
-  getRealtimeTelemetryFromCache,
+  getHighFreqTelemetryFromRedis,
   processIncomingTelemetry,
 } from "../services/telemetry.service";
 import { ensureString, optionalNumber } from "../utils/validation";
@@ -89,34 +89,71 @@ export async function getHistoricalByCollar(req: Request, res: Response, next: N
   }
 }
 
+// Tiempo real directo desde Redis (pipeline IoT), indexado por collar_id (ej: cow:COLLAR-001)
+export async function getHighFreqRealtimeFromRedis(req: Request, res: Response, next: NextFunction) {
+  try {
+    const collarId = ensureString(req.params.collarId, "collarId (IoT)");
+
+    const data = await getHighFreqTelemetryFromRedis(collarId);
+
+    if (data == null) {
+      return res.status(404).json({
+        error: true,
+        message: "No hay datos de telemetría en Redis para este collar_id",
+      });
+    }
+
+    res.json({
+      collarId,
+      source: "redis:cow",
+      data,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
 // Server-Sent Events: stream de telemetría en tiempo real
 export async function streamRealtimeByCollar(req: Request, res: Response, next: NextFunction) {
   try {
-    const collarId = ensureString(req.params.collarId, "collarId (UUID)");
-    const tenantId = req.query.tenantId ? String(req.query.tenantId) : undefined;
+    const collarId = ensureString(req.params.collarId, "collarId (IoT)");
 
     res.setHeader("Content-Type", "text/event-stream");
     res.setHeader("Cache-Control", "no-cache");
     res.setHeader("Connection", "keep-alive");
 
-    // Enviar primer snapshot inmediato SOLO desde Redis (si existe)
-    const initial = await getRealtimeTelemetryFromCache(collarId, tenantId);
+    // Enviar primer snapshot inmediato SOLO desde Redis (hash cow:{collarId}, si existe)
+    const initial: any = await getHighFreqTelemetryFromRedis(collarId);
     let lastTimestamp: string | undefined = undefined;
 
     if (initial) {
-      lastTimestamp = initial.timestamp;
-      res.write(`data: ${JSON.stringify(initial)}\n\n`);
+      lastTimestamp = initial.timestamp ? String(initial.timestamp) : undefined;
+      res.write(
+        `data: ${JSON.stringify({
+          collarId,
+          source: "redis:cow",
+          data: initial,
+        })}\n\n`
+      );
     }
 
     const interval = setInterval(async () => {
       try {
-        // Consultar únicamente Redis para no cargar la BD
-        const snapshot = await getRealtimeTelemetryFromCache(collarId, tenantId);
-        if (!snapshot) return;
+        // Consultar únicamente Redis usando collar_id (hash cow:{collarId})
+        const current: any = await getHighFreqTelemetryFromRedis(collarId);
+        if (!current) return;
 
-        if (snapshot.timestamp !== lastTimestamp) {
-          lastTimestamp = snapshot.timestamp;
-          res.write(`data: ${JSON.stringify(snapshot)}\n\n`);
+        const currentTs = current.timestamp ? String(current.timestamp) : undefined;
+
+        if (!currentTs || currentTs !== lastTimestamp) {
+          lastTimestamp = currentTs;
+          res.write(
+            `data: ${JSON.stringify({
+              collarId,
+              source: "redis:cow",
+              data: current,
+            })}\n\n`
+          );
         }
       } catch (err) {
         console.error("[SSE] Error obteniendo telemetría:", err);

@@ -9,7 +9,7 @@ import {
   getTelemetryForCollar,
   insertTelemetry,
 } from "./db/telemetry.db.service";
-import { getCollarByCollarId, getCollarById } from "./db/collar.db.service";
+import { getCollarByCollarId } from "./db/collar.db.service";
 
 const REALTIME_TTL_SECONDS = 60 * 5; // 5 minutos
 
@@ -68,21 +68,18 @@ export async function getRealtimeTelemetryByCollar(
   return snapshot;
 }
 
-export async function getRealtimeTelemetryFromCache(
-  collarUuid: string,
+export async function getRealtimeTelemetryFromCacheByCollarId(
+  collarId: string,
   tenantId?: string
 ): Promise<TelemetrySnapshot | null> {
   try {
-    const collar = await getCollarById(collarUuid);
-    if (!collar) return null;
-
     const redis = getRedisClient();
-    const key = getRealtimeKeyByCollarId(collar.collar_id, tenantId);
+    const key = getRealtimeKeyByCollarId(collarId, tenantId);
     const raw = await redis.get(key);
     if (!raw) return null;
     return JSON.parse(raw) as TelemetrySnapshot;
   } catch (err) {
-    console.error("[TelemetryService] Error leyendo solo desde Redis:", err);
+    console.error("[TelemetryService] Error leyendo solo desde Redis (por collar_id):", err);
     return null;
   }
 }
@@ -254,4 +251,26 @@ function getRealtimeKeyByCollarId(collarId: string, tenantId?: string) {
   return tenantId
     ? `telemetry:tenant:${tenantId}:collarId:${collarId}`
     : `telemetry:collarId:${collarId}`;
+}
+
+// Lectura directa de la telemetría "raw" almacenada en Redis por el pipeline IoT,
+// usando la clave cow:{collarId} como HASH. Esta función NO consulta la base de datos.
+export async function getHighFreqTelemetryFromRedis(
+  collarId: string
+): Promise<unknown | null> {
+  try {
+    const redis = getRedisClient();
+    const key = `cow:${collarId}`;
+    const hash = await redis.hGetAll(key);
+
+    // hGetAll devuelve {} si la key no existe o no es un hash
+    if (!hash || Object.keys(hash).length === 0) {
+      return null;
+    }
+
+    return hash;
+  } catch (err) {
+    console.error("[TelemetryService] Error leyendo telemetría high-freq desde Redis:", err);
+    return null;
+  }
 }
