@@ -5,6 +5,7 @@ import {
   getAnimalById,
   getCollarById,
   getCollarByCollarId,
+  getCollarsByTenant,
   linkCollarToAnimalTx,
   unlinkCollarTx,
   updateCollarTenant,
@@ -149,4 +150,13 @@ export async function unassignCollarTenant(params: {
 
   const updated = await updateCollarTenant(collarUuid, null);
   return updated ?? collar;
+}
+
+export async function listCollarsByTenant(params: {
+  tenantId: string;
+}): Promise<Collar[]> {
+  const { tenantId } = params;
+
+  const collars = await getCollarsByTenant(tenantId, false);
+  return collars;
 }

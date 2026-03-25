@@ -9,7 +9,7 @@ import {
   getTelemetryForCollar,
   insertTelemetry,
 } from "./db/telemetry.db.service";
-import { getCollarByCollarId } from "./db/collar.db.service";
+import { getCollarByCollarId, getCollarsByProducerId, getCollarsByTenant } from "./db/collar.db.service";
 
 const REALTIME_TTL_SECONDS = 60 * 5; // 5 minutos
 
@@ -32,7 +32,6 @@ export async function getRealtimeTelemetryByCollar(
   // 2) Fallback a última medición en BD
   const latest = await getLatestTelemetryForCollar(collarUuid, tenantId);
   if (!latest) return null;
-
   const snapshot: TelemetrySnapshot = {
     collarId: latest.collar_id,
     animalId: latest.animal_id ?? undefined,
@@ -273,4 +272,168 @@ export async function getHighFreqTelemetryFromRedis(
     console.error("[TelemetryService] Error leyendo telemetría high-freq desde Redis:", err);
     return null;
   }
+}
+
+export async function getLatestTelemetryForProducerCollars(
+  producerId: string,
+  tenantId?: string
+): Promise<
+  Array<{
+    collar: {
+      id: string;
+      collarId: string;
+      tenantId: string | null;
+      animalId: string | null;
+      status: string;
+      firmwareVersion: string | null;
+      linkedAt: string | null;
+      purchasedAt: string | null;
+    };
+    telemetry: TelemetrySnapshot | null;
+  }>
+> {
+  const collars = await getCollarsByProducerId(producerId, tenantId);
+
+  const results = await Promise.all(
+    collars.map(async (c) => {
+      const latest = await getLatestTelemetryForCollar(c.id, tenantId);
+
+      let snapshot: TelemetrySnapshot | null = null;
+      if (latest) {
+        snapshot = {
+          collarId: latest.collar_id,
+          animalId: latest.animal_id ?? undefined,
+          position:
+            latest.latitude != null && latest.longitude != null
+              ? {
+                  lat: latest.latitude,
+                  lng: latest.longitude,
+                  alt: latest.altitude ?? undefined,
+                }
+              : undefined,
+          battery: {
+            percent: latest.bat_percent ?? undefined,
+            voltage: latest.bat_voltage ?? undefined,
+          },
+          activity: latest.activity ?? undefined,
+          rssi: latest.rssi ?? undefined,
+          snr: latest.snr ?? undefined,
+          timestamp: latest.timestamp,
+        };
+      }
+
+      return {
+        collar: {
+          id: c.id,
+          collarId: c.collar_id,
+          tenantId: c.tenant_id ?? null,
+          animalId: c.animal_id ?? null,
+          status: String(c.status),
+          firmwareVersion: c.firmware_version ?? null,
+          linkedAt: c.linked_at ?? null,
+          purchasedAt: c.purchased_at ?? null,
+        },
+        telemetry: snapshot,
+      };
+    })
+  );
+
+  return results;
+}
+
+export async function getTenantRealtimeSnapshotFromRedis(tenantId: string): Promise<{
+  tenantId: string;
+  at: string;
+  collars: Array<{
+    collarId: string;
+    collarUuid: string;
+    animalId: string | null;
+    data: unknown | null;
+  }>;
+}> {
+  const collars = await getCollarsByTenant(tenantId, true);
+
+  const items = await Promise.all(
+    collars.map(async (c) => {
+      const data = await getHighFreqTelemetryFromRedis(c.collar_id);
+      return {
+        collarId: c.collar_id,
+        collarUuid: c.id,
+        animalId: c.animal_id ?? null,
+        data,
+      };
+    })
+  );
+
+  return {
+    tenantId,
+    at: new Date().toISOString(),
+    collars: items,
+  };
+}
+
+export async function getLatestTelemetryForTenantCollars(
+  tenantId: string
+): Promise<
+  Array<{
+    collar: {
+      id: string;
+      collarId: string;
+      tenantId: string | null;
+      animalId: string | null;
+      status: string;
+      firmwareVersion: string | null;
+      linkedAt: string | null;
+      purchasedAt: string | null;
+    };
+    telemetry: TelemetrySnapshot | null;
+  }>
+> {
+  const collars = await getCollarsByTenant(tenantId, true);
+
+  const results = await Promise.all(
+    collars.map(async (c) => {
+      const latest = await getLatestTelemetryForCollar(c.id, tenantId);
+
+      let snapshot: TelemetrySnapshot | null = null;
+      if (latest) {
+        snapshot = {
+          collarId: latest.collar_id,
+          animalId: latest.animal_id ?? undefined,
+          position:
+            latest.latitude != null && latest.longitude != null
+              ? {
+                  lat: latest.latitude,
+                  lng: latest.longitude,
+                  alt: latest.altitude ?? undefined,
+                }
+              : undefined,
+          battery: {
+            percent: latest.bat_percent ?? undefined,
+            voltage: latest.bat_voltage ?? undefined,
+          },
+          activity: latest.activity ?? undefined,
+          rssi: latest.rssi ?? undefined,
+          snr: latest.snr ?? undefined,
+          timestamp: latest.timestamp,
+        };
+      }
+
+      return {
+        collar: {
+          id: c.id,
+          collarId: c.collar_id,
+          tenantId: c.tenant_id ?? null,
+          animalId: c.animal_id ?? null,
+          status: String(c.status),
+          firmwareVersion: c.firmware_version ?? null,
+          linkedAt: c.linked_at ?? null,
+          purchasedAt: c.purchased_at ?? null,
+        },
+        telemetry: snapshot,
+      };
+    })
+  );
+
+  return results;
 }

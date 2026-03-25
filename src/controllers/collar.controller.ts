@@ -6,6 +6,7 @@ import {
   unassignCollar,
   assignCollarTenant,
   unassignCollarTenant,
+  listCollarsByTenant,
 } from "../services/collar.service";
 import { ensureString } from "../utils/validation";
 
@@ -128,6 +129,22 @@ export async function unassignCollarTenantHandler(req: Request, res: Response, n
     });
 
     res.json({ collar });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function listTenantCollarsHandler(req: Request, res: Response, next: NextFunction) {
+  try {
+    const tenantId = ensureString(req.params.tenantId, "tenantId");
+
+    const collars = await listCollarsByTenant({ tenantId });
+
+    res.json({
+      tenantId,
+      count: collars.length,
+      items: collars,
+    });
   } catch (err) {
     next(err);
   }

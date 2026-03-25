@@ -272,3 +272,65 @@ export async function updateCollarTenant(
   const { rows } = await query<Collar>(sql, params);
   return rows[0] || null;
 }
+
+export async function getCollarsByTenant(
+  tenantId: string,
+  onlyAssigned: boolean = false
+): Promise<Collar[]> {
+  const params: any[] = [tenantId];
+  let sql = `
+    SELECT
+      id,
+      collar_id,
+      tenant_id,
+      animal_id,
+      status,
+      firmware_version,
+      linked_at,
+      purchased_at
+    FROM collars
+    WHERE tenant_id = $1
+  `;
+
+  if (onlyAssigned) {
+    sql += " AND animal_id IS NOT NULL";
+  }
+
+  sql += " ORDER BY collar_id ASC";
+
+  const { rows } = await query<Collar>(sql, params);
+  return rows;
+}
+
+export async function getCollarsByProducerId(
+  producerId: string,
+  tenantId?: string
+): Promise<Collar[]> {
+  const params: any[] = [producerId];
+
+  let sql = `
+    SELECT
+      c.id,
+      c.collar_id,
+      c.tenant_id,
+      c.animal_id,
+      c.status,
+      c.firmware_version,
+      c.linked_at,
+      c.purchased_at
+    FROM collars c
+    JOIN animals a ON c.animal_id = a.id
+    JOIN upps u ON a.upp_id = u.id
+    WHERE u.producer_id = $1
+  `;
+
+  if (tenantId) {
+    params.push(tenantId);
+    sql += ` AND c.tenant_id = $${params.length}`;
+  }
+
+  sql += " ORDER BY c.collar_id ASC";
+
+  const { rows } = await query<Collar>(sql, params);
+  return rows;
+}

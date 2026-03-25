@@ -6,12 +6,16 @@ import {
   unassignCollarHandler,
   assignCollarTenantHandler,
   unassignCollarTenantHandler,
+  listTenantCollarsHandler,
 } from "../controllers/collar.controller";
 
 const router = Router();
 
 // Crear un nuevo collar
 router.post("/collars", createCollarHandler);
+
+// Listar todos los collares de un tenant
+router.get("/tenants/:tenantId/collars", listTenantCollarsHandler);
 
 // Asignar / desasignar tenant al collar (por UUID)
 router.post("/collars/:collarId/tenant/assign", assignCollarTenantHandler);

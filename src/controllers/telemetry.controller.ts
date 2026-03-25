@@ -4,6 +4,9 @@ import {
   getRealtimeTelemetryByCollar,
   getHighFreqTelemetryFromRedis,
   processIncomingTelemetry,
+  getLatestTelemetryForProducerCollars,
+  getTenantRealtimeSnapshotFromRedis,
+  getLatestTelemetryForTenantCollars,
 } from "../services/telemetry.service";
 import { ensureString, optionalNumber } from "../utils/validation";
 
@@ -162,6 +165,87 @@ export async function streamRealtimeByCollar(req: Request, res: Response, next: 
 
     req.on("close", () => {
       clearInterval(interval);
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// Telemetría de todos los collares asociados a un productor (último dato por collar, desde Postgres)
+export async function getProducerCollarsTelemetry(
+  req: Request,
+  res: Response,
+  next: NextFunction
+) {
+  try {
+    const producerId = ensureString(req.params.producerId, "producerId");
+    const tenantId = req.query.tenantId ? String(req.query.tenantId) : undefined;
+
+    const result = await getLatestTelemetryForProducerCollars(producerId, tenantId);
+
+    res.json({
+      producerId,
+      tenantId: tenantId ?? null,
+      count: result.length,
+      items: result,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// Stream SSE con la telemetría en Redis de todos los collares asignados a un tenant
+export async function streamTenantCollarsFromRedis(
+  req: Request,
+  res: Response,
+  next: NextFunction
+) {
+  try {
+    const tenantId = ensureString(req.params.tenantId, "tenantId");
+
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Connection", "keep-alive");
+
+    const sendSnapshot = async () => {
+      const snapshot = await getTenantRealtimeSnapshotFromRedis(tenantId);
+      res.write(`data: ${JSON.stringify(snapshot)}\n\n`);
+    };
+
+    // Primer envío inmediato
+    await sendSnapshot();
+
+    const interval = setInterval(async () => {
+      try {
+        await sendSnapshot();
+      } catch (err) {
+        console.error("[SSE tenant] Error obteniendo snapshot de Redis:", err);
+      }
+    }, 30000); // cada 30 segundos
+
+    req.on("close", () => {
+      clearInterval(interval);
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// Telemetría de todos los collares de un tenant (última medición por collar, Postgres)
+export async function getTenantCollarsTelemetry(
+  req: Request,
+  res: Response,
+  next: NextFunction
+) {
+  try {
+    const tenantId = ensureString(req.params.tenantId, "tenantId");
+
+    const result = await getLatestTelemetryForTenantCollars(tenantId);
+
+    res.json({
+      tenantId,
+      count: result.length,
+      items: result,
     });
   } catch (err) {
     next(err);
