@@ -5,6 +5,7 @@ import morgan from "morgan";
 
 import telemetryRoutes from "./routes/telemetry.routes";
 import collarRoutes from "./routes/collar.routes";
+import animalsRoutes from "./routes/animals.routes";
 import { errorHandler } from "./middlewares/errorHandler";
 
 const app: Application = express();
@@ -32,6 +33,7 @@ app.use(express.urlencoded({ extended: true }));
 
 app.use("/api", telemetryRoutes);
 app.use("/api", collarRoutes);
+app.use("/api", animalsRoutes);
 
 // ===========================
 // Health check

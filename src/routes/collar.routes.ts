@@ -7,12 +7,16 @@ import {
   assignCollarTenantHandler,
   unassignCollarTenantHandler,
   listTenantCollarsHandler,
+  listCollarsByTenantQueryHandler,
 } from "../controllers/collar.controller";
 
 const router = Router();
 
 // Crear un nuevo collar
 router.post("/collars", createCollarHandler);
+
+// Listar collares por tenant (query)
+router.get("/collars", listCollarsByTenantQueryHandler);
 
 // Listar todos los collares de un tenant
 router.get("/tenants/:tenantId/collars", listTenantCollarsHandler);

@@ -57,14 +57,23 @@ export async function assignCollarToAnimal(params: {
     throw new Error("El animal no está en estado activo");
   }
 
+  const effectiveTenantId = tenantId ?? collar.tenant_id ?? animal.tenant_id ?? null;
+  if (!effectiveTenantId) {
+    throw new Error("No se pudo resolver tenantId para registrar el historial de asignación");
+  }
+
+  if (collar.tenant_id && animal.tenant_id && collar.tenant_id !== animal.tenant_id) {
+    throw new Error("El collar y el animal pertenecen a tenants distintos");
+  }
+
   await linkCollarToAnimalTx({
-    collarId: collar.collar_id,
+    collarUuid: collar.id,
     animalId: animal.id,
-    tenantId,
+    tenantId: effectiveTenantId,
     linkedBy,
   });
 
-  const updatedCollar = await getCollarById(collarUuid, tenantId);
+  const updatedCollar = await getCollarById(collarUuid, effectiveTenantId);
 
   return {
     collar: updatedCollar ?? collar,
@@ -88,13 +97,18 @@ export async function unassignCollar(params: {
     throw new Error("El collar no está asignado a ningún animal");
   }
 
+  const effectiveTenantId = tenantId ?? collar.tenant_id ?? null;
+  if (!effectiveTenantId) {
+    throw new Error("No se pudo resolver tenantId para registrar el historial de desasignación");
+  }
+
   await unlinkCollarTx({
-    collarId: collar.collar_id,
-    tenantId,
+    collarUuid: collar.id,
+    tenantId: effectiveTenantId,
     unlinkedBy,
   });
 
-  const updatedCollar = await getCollarById(collarUuid, tenantId);
+  const updatedCollar = await getCollarById(collarUuid, effectiveTenantId);
 
   return {
     collar: updatedCollar ?? collar,

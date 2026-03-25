@@ -2,6 +2,26 @@ import { dbPool, query } from "../../config/db";
 import { Collar } from "../../types/collar.types";
 import { Animal } from "../../types/animal.types";
 
+function createHttpError(message: string, statusCode: number): Error {
+  const error = new Error(message) as Error & { statusCode?: number };
+  error.statusCode = statusCode;
+  return error;
+}
+
+async function ensureProfileExistsTx(client: any, profileId: string, fieldName: string): Promise<void> {
+  const result = await client.query(
+    `SELECT 1 FROM profiles WHERE id = $1 LIMIT 1`,
+    [profileId]
+  );
+
+  if ((result.rowCount ?? 0) === 0) {
+    throw createHttpError(
+      `El valor de ${fieldName} no existe en profiles.id: ${profileId}`,
+      400
+    );
+  }
+}
+
 export interface CreateCollarInput {
   collarId: string;
   tenantId?: string | null;
@@ -128,12 +148,12 @@ export async function getAnimalById(animalId: string, tenantId?: string): Promis
 }
 
 export async function linkCollarToAnimalTx(params: {
-  collarId: string;
+  collarUuid: string;
   animalId: string;
-  tenantId?: string;
+  tenantId: string;
   linkedBy?: string;
 }): Promise<void> {
-  const { collarId, animalId, tenantId, linkedBy } = params;
+  const { collarUuid, animalId, tenantId, linkedBy } = params;
 
   if (!dbPool) {
     throw new Error("DB no configurada");
@@ -143,18 +163,25 @@ export async function linkCollarToAnimalTx(params: {
 
   try {
     await client.query("BEGIN");
+    const nowIso = new Date().toISOString();
 
-    // Actualizar collar
-    const updateParams: any[] = [animalId, new Date().toISOString(), collarId];
-    let updateCondition = "WHERE collar_id = $3";
-
-    if (tenantId) {
-      updateParams.push(tenantId);
-      updateCondition += ` AND tenant_id = $${updateParams.length}`;
+    if (linkedBy) {
+      await ensureProfileExistsTx(client, linkedBy, "linkedBy");
     }
 
+    // Actualizar collar
+    const updateParams: any[] = [animalId, nowIso, tenantId, collarUuid, tenantId];
+    const updateCondition = "WHERE id = $4 AND tenant_id = $5";
+
     await client.query(
-      `UPDATE collars SET animal_id = $1, linked_at = $2, status = 'linked' ${updateCondition}`,
+      `UPDATE collars
+       SET animal_id = $1,
+           linked_at = $2,
+           unlinked_at = null,
+           tenant_id = $3,
+           status = 'linked',
+           updated_at = now()
+       ${updateCondition}`,
       updateParams
     );
 
@@ -162,18 +189,24 @@ export async function linkCollarToAnimalTx(params: {
     const historySql = `
       INSERT INTO collar_animal_history (
         collar_id_fk,
+        tenant_id,
         animal_id,
         linked_at,
         linked_by
-      ) VALUES ($1, $2, $3, $4)
+      ) VALUES ($1, $2, $3, $4, $5)
     `;
-    const historyParams = [collarId, animalId, new Date().toISOString(), linkedBy ?? null];
+    const historyParams = [collarUuid, tenantId, animalId, nowIso, linkedBy ?? null];
 
     await client.query(historySql, historyParams);
 
     await client.query("COMMIT");
-  } catch (err) {
+  } catch (err: any) {
     await client.query("ROLLBACK");
+
+    if (err?.code === "23503" && err?.constraint === "cah_linked_by_fkey") {
+      throw createHttpError("linkedBy debe ser un UUID existente en profiles.id", 400);
+    }
+
     throw err;
   } finally {
     client.release();
@@ -181,11 +214,11 @@ export async function linkCollarToAnimalTx(params: {
 }
 
 export async function unlinkCollarTx(params: {
-  collarId: string;
-  tenantId?: string;
+  collarUuid: string;
+  tenantId: string;
   unlinkedBy?: string;
 }): Promise<void> {
-  const { collarId, tenantId, unlinkedBy } = params;
+  const { collarUuid, tenantId, unlinkedBy } = params;
 
   if (!dbPool) {
     throw new Error("DB no configurada");
@@ -195,53 +228,106 @@ export async function unlinkCollarTx(params: {
 
   try {
     await client.query("BEGIN");
+    const nowIso = new Date().toISOString();
+
+    if (unlinkedBy) {
+      await ensureProfileExistsTx(client, unlinkedBy, "unlinkedBy");
+    }
 
     // Obtener animal asociado actual
     const currentSql = `
-      SELECT animal_id FROM collars
-      WHERE collar_id = $1
-      ${tenantId ? "AND tenant_id = $2" : ""}
+      SELECT animal_id, linked_at FROM collars
+      WHERE id = $1
+      AND tenant_id = $2
       LIMIT 1
     `;
-    const currentParams = tenantId ? [collarId, tenantId] : [collarId];
-    const currentRes = await client.query<{ animal_id: string | null }>(currentSql, currentParams);
+    const currentParams = [collarUuid, tenantId];
+    const currentRes = await client.query<{ animal_id: string | null; linked_at: string | null }>(
+      currentSql,
+      currentParams
+    );
     const currentAnimalId = currentRes.rows[0]?.animal_id;
+    const currentLinkedAt = currentRes.rows[0]?.linked_at;
 
-    // Actualizar collar
-    const updateParams: any[] = [null, "unlinked", collarId];
-    let updateCondition = "WHERE collar_id = $3";
-
-    if (tenantId) {
-      updateParams.push(tenantId);
-      updateCondition += ` AND tenant_id = $${updateParams.length}`;
+    if (!currentAnimalId) {
+      throw new Error("El collar no tiene animal asociado para desasignar");
     }
 
+    // Actualizar collar
+    const updateParams: any[] = [nowIso, collarUuid, tenantId];
+    const updateCondition = "WHERE id = $2 AND tenant_id = $3";
+
     await client.query(
-      `UPDATE collars SET animal_id = $1, status = $2 ${updateCondition}`,
+      `UPDATE collars
+       SET animal_id = null,
+           status = 'unlinked',
+           unlinked_at = $1,
+           updated_at = now()
+       ${updateCondition}`,
       updateParams
     );
 
-    // Insertar en historial
-    const historySql = `
-      INSERT INTO collar_animal_history (
-        collar_id_fk,
-        animal_id,
-        unlinked_at,
-        unlinked_by
-      ) VALUES ($1, $2, $3, $4)
+    // Cerrar el último historial abierto para ese vínculo collar-animal
+    const closeHistorySql = `
+      WITH last_open AS (
+        SELECT id
+        FROM collar_animal_history
+        WHERE collar_id_fk = $1
+          AND tenant_id = $2
+          AND animal_id = $3
+          AND unlinked_at IS NULL
+        ORDER BY linked_at DESC
+        LIMIT 1
+      )
+      UPDATE collar_animal_history h
+      SET unlinked_at = $4,
+          unlinked_by = $5
+      FROM last_open
+      WHERE h.id = last_open.id
     `;
-    const historyParams = [
-      collarId,
+    const closeRes = await client.query(closeHistorySql, [
+      collarUuid,
+      tenantId,
       currentAnimalId,
-      new Date().toISOString(),
+      nowIso,
       unlinkedBy ?? null,
-    ];
+    ]);
 
-    await client.query(historySql, historyParams);
+    // Fallback: si no había historial abierto, insertar un registro consistente
+    if ((closeRes.rowCount ?? 0) === 0) {
+      const historySql = `
+        INSERT INTO collar_animal_history (
+          collar_id_fk,
+          tenant_id,
+          animal_id,
+          linked_at,
+          unlinked_at,
+          unlinked_by,
+          notes
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+      `;
+
+      const historyParams = [
+        collarUuid,
+        tenantId,
+        currentAnimalId,
+        currentLinkedAt ?? nowIso,
+        nowIso,
+        unlinkedBy ?? null,
+        "Auto-cierre de historial sin registro abierto previo",
+      ];
+
+      await client.query(historySql, historyParams);
+    }
 
     await client.query("COMMIT");
-  } catch (err) {
+  } catch (err: any) {
     await client.query("ROLLBACK");
+
+    if (err?.code === "23503" && err?.constraint === "cah_unlinked_by_fkey") {
+      throw createHttpError("unlinkedBy debe ser un UUID existente en profiles.id", 400);
+    }
+
     throw err;
   } finally {
     client.release();
@@ -255,6 +341,11 @@ export async function updateCollarTenant(
   const sql = `
     UPDATE collars
     SET tenant_id = $2,
+        status = CASE
+          WHEN $2 IS NULL AND animal_id IS NULL THEN 'inactive'
+          WHEN $2 IS NOT NULL AND status = 'inactive' AND animal_id IS NULL THEN 'active'
+          ELSE status
+        END,
         updated_at = now()
     WHERE id = $1
     RETURNING
