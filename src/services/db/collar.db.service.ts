@@ -425,3 +425,35 @@ export async function getCollarsByProducerId(
   const { rows } = await query<Collar>(sql, params);
   return rows;
 }
+
+export async function getCollarsByUppId(
+  uppId: string,
+  tenantId?: string
+): Promise<Collar[]> {
+  const params: any[] = [uppId];
+
+  let sql = `
+    SELECT
+      c.id,
+      c.collar_id,
+      c.tenant_id,
+      c.animal_id,
+      c.status,
+      c.firmware_version,
+      c.linked_at,
+      c.purchased_at
+    FROM collars c
+    JOIN animals a ON c.animal_id = a.id
+    WHERE a.upp_id = $1
+  `;
+
+  if (tenantId) {
+    params.push(tenantId);
+    sql += ` AND c.tenant_id = $${params.length}`;
+  }
+
+  sql += " ORDER BY c.collar_id ASC";
+
+  const { rows } = await query<Collar>(sql, params);
+  return rows;
+}

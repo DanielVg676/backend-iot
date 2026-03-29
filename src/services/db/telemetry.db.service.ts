@@ -75,6 +75,81 @@ export async function getTelemetryForCollar(filters: TelemetryDbFilters): Promis
   return rows;
 }
 
+interface TelemetryByUppDbFilters {
+  uppId: string;
+  tenantId?: string;
+  from?: string; // ISO
+  to?: string; // ISO
+  limit?: number;
+  offset?: number;
+}
+
+export async function getTelemetryForUpp(filters: TelemetryByUppDbFilters): Promise<TelemetryRecord[]> {
+  const { uppId, tenantId, from, to, limit = 100, offset = 0 } = filters;
+
+  const params: any[] = [uppId];
+  const conditions: string[] = ["a.upp_id = $1"];
+  let paramIndex = params.length;
+
+  if (tenantId) {
+    params.push(tenantId);
+    paramIndex = params.length;
+    conditions.push(`t.tenant_id = $${paramIndex}`);
+  }
+  if (from) {
+    params.push(from);
+    paramIndex = params.length;
+    conditions.push(`t.timestamp >= $${paramIndex}`);
+  }
+  if (to) {
+    params.push(to);
+    paramIndex = params.length;
+    conditions.push(`t.timestamp <= $${paramIndex}`);
+  }
+
+  params.push(limit);
+  const limitIndex = params.length;
+  params.push(offset);
+  const offsetIndex = params.length;
+
+  const whereClause = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+
+  const sql = `
+    SELECT
+      t.id,
+      t.collar_uuid,
+      t.collar_id,
+      t.tenant_id,
+      t.animal_id,
+      t.latitude,
+      t.longitude,
+      t.altitude,
+      t.speed,
+      t.temperature,
+      t.activity,
+      t.bat_voltage,
+      t.bat_percent,
+      t.accel_x,
+      t.accel_y,
+      t.accel_z,
+      t.gyro_x,
+      t.gyro_y,
+      t.gyro_z,
+      t.rssi,
+      t.snr,
+      t.timestamp
+    FROM telemetry t
+    JOIN animals a ON t.animal_id = a.id
+    ${whereClause}
+    ORDER BY t.timestamp DESC
+    LIMIT $${limitIndex}
+    OFFSET $${offsetIndex}
+  `;
+
+  const { rows } = await query<TelemetryRecord>(sql, params);
+  return rows;
+}
+
 export async function getLatestTelemetryForCollar(collarUuid: string, tenantId?: string): Promise<TelemetryRecord | null> {
   const params: any[] = [collarUuid];
   const conditions: string[] = ["collar_uuid = $1"]; // usamos siempre UUID

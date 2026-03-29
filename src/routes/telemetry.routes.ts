@@ -1,14 +1,16 @@
 import { Router } from "express";
 import {
   getHistoricalByCollar,
+  getHistoricalByUpp,
   getRealtimeByCollar,
+  streamRealtimeByCollar,
   getHighFreqRealtimeFromRedis,
+  getUppRealtimeFromRedis,
   postTelemetry,
   getProducerCollarsTelemetry,
-  streamTenantCollarsFromRedis,
+  streamUppCollarsFromRedis,
   getTenantCollarsTelemetry,
 } from "../controllers/telemetry.controller";
-import { streamRealtimeByCollar } from "../controllers/telemetry.controller";
 
 const router = Router();
 
@@ -22,14 +24,20 @@ router.get("/collars/:collarId/realtime/stream", streamRealtimeByCollar);
 // Tiempo real directo desde Redis (clave cow:{collarId})
 router.get("/collars/:collarId/redis/realtime", getHighFreqRealtimeFromRedis);
 
+// Tiempo real Redis por rancho UPP (todos los collares del UPP)
+router.get("/upps/:uppId/collars/redis/realtime", getUppRealtimeFromRedis);
+
 // Histórico del collar
 router.get("/collars/:collarId/history", getHistoricalByCollar);
+
+// Histórico de telemetría por rancho UPP
+router.get("/upps/:uppId/collars/history", getHistoricalByUpp);
 
 // Telemetría de todos los collares de un productor (última medición por collar, Postgres)
 router.get("/producers/:producerId/collars/telemetry", getProducerCollarsTelemetry);
 
-// Stream SSE: telemetría desde Redis de todos los collares asignados a un tenant
-router.get("/tenants/:tenantId/collars/realtime/stream", streamTenantCollarsFromRedis);
+// Stream SSE: telemetría desde Redis de todos los collares asignados a un rancho UPP
+router.get("/upps/:uppId/collars/realtime/stream", streamUppCollarsFromRedis);
 
 // Telemetría de todos los collares de un tenant (última medición por collar, Postgres)
 router.get("/tenants/:tenantId/collars/telemetry", getTenantCollarsTelemetry);

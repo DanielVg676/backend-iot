@@ -6,10 +6,16 @@ import {
 } from "../types/telemetry.types";
 import {
   getLatestTelemetryForCollar,
+  getTelemetryForUpp,
   getTelemetryForCollar,
   insertTelemetry,
 } from "./db/telemetry.db.service";
-import { getCollarByCollarId, getCollarsByProducerId, getCollarsByTenant } from "./db/collar.db.service";
+import {
+  getCollarByCollarId,
+  getCollarsByProducerId,
+  getCollarsByTenant,
+  getCollarsByUppId,
+} from "./db/collar.db.service";
 
 const REALTIME_TTL_SECONDS = 60 * 5; // 5 minutos
 
@@ -256,7 +262,7 @@ function getRealtimeKeyByCollarId(collarId: string, tenantId?: string) {
 // usando la clave cow:{collarId} como HASH. Esta función NO consulta la base de datos.
 export async function getHighFreqTelemetryFromRedis(
   collarId: string
-): Promise<unknown | null> {
+): Promise<Record<string, string> | null> {
   try {
     const redis = getRedisClient();
     const key = `cow:${collarId}`;
@@ -348,7 +354,7 @@ export async function getTenantRealtimeSnapshotFromRedis(tenantId: string): Prom
     collarId: string;
     collarUuid: string;
     animalId: string | null;
-    data: unknown | null;
+    data: Record<string, string> | null;
   }>;
 }> {
   const collars = await getCollarsByTenant(tenantId, true);
@@ -436,4 +442,99 @@ export async function getLatestTelemetryForTenantCollars(
   );
 
   return results;
+}
+
+export async function getUppRealtimeSnapshotFromRedis(
+  uppId: string,
+  tenantId?: string
+): Promise<{
+  uppId: string;
+  tenantId: string | null;
+  at: string;
+  collars: Array<{
+    collarId: string;
+    collarUuid: string;
+    animalId: string | null;
+    data: Record<string, string> | null;
+  }>;
+}> {
+  const collars = await getCollarsByUppId(uppId, tenantId);
+
+  const items = await Promise.all(
+    collars.map(async (c) => {
+      const data = await getHighFreqTelemetryFromRedis(c.collar_id);
+      return {
+        collarId: c.collar_id,
+        collarUuid: c.id,
+        animalId: c.animal_id ?? null,
+        data,
+      };
+    })
+  );
+
+  return {
+    uppId,
+    tenantId: tenantId ?? null,
+    at: new Date().toISOString(),
+    collars: items,
+  };
+}
+
+export async function getHistoricalTelemetryByUpp(
+  uppId: string,
+  query: TelemetryHistoryQuery,
+  tenantId?: string
+): Promise<TelemetryHistoryResponse> {
+  const page = query.page && query.page > 0 ? query.page : 1;
+  const pageSize = query.limit && query.limit > 0 ? query.limit : 100;
+  const offset = (page - 1) * pageSize;
+
+  let { from, to } = query;
+
+  if (!from && !to) {
+    const toDate = new Date();
+    const fromDate = new Date(toDate.getTime() - 24 * 60 * 60 * 1000);
+    from = fromDate.toISOString();
+    to = toDate.toISOString();
+  }
+
+  const rows = await getTelemetryForUpp({
+    uppId,
+    tenantId,
+    from,
+    to,
+    limit: pageSize + 1,
+    offset,
+  });
+
+  const hasNextPage = rows.length > pageSize;
+  const slice = rows.slice(0, pageSize);
+
+  const data: TelemetrySnapshot[] = slice.map((row) => ({
+    collarId: row.collar_id,
+    animalId: row.animal_id ?? undefined,
+    position:
+      row.latitude != null && row.longitude != null
+        ? {
+            lat: row.latitude,
+            lng: row.longitude,
+            alt: row.altitude ?? undefined,
+          }
+        : undefined,
+    battery: {
+      percent: row.bat_percent ?? undefined,
+      voltage: row.bat_voltage ?? undefined,
+    },
+    activity: row.activity ?? undefined,
+    rssi: row.rssi ?? undefined,
+    snr: row.snr ?? undefined,
+    timestamp: row.timestamp,
+  }));
+
+  return {
+    data,
+    page,
+    pageSize,
+    hasNextPage,
+  };
 }

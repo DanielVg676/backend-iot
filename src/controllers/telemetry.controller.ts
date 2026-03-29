@@ -1,14 +1,27 @@
 import { Request, Response, NextFunction } from "express";
 import {
   getHistoricalTelemetryByCollar,
+  getHistoricalTelemetryByUpp,
   getRealtimeTelemetryByCollar,
   getHighFreqTelemetryFromRedis,
   processIncomingTelemetry,
   getLatestTelemetryForProducerCollars,
-  getTenantRealtimeSnapshotFromRedis,
+  getUppRealtimeSnapshotFromRedis,
   getLatestTelemetryForTenantCollars,
 } from "../services/telemetry.service";
 import { ensureString, optionalNumber } from "../utils/validation";
+
+function getQueryParamString(value: unknown): string | undefined {
+  if (typeof value === "string") {
+    return value;
+  }
+
+  if (Array.isArray(value)) {
+    return typeof value[0] === "string" ? value[0] : undefined;
+  }
+
+  return undefined;
+}
 
 export async function postTelemetry(req: Request, res: Response, next: NextFunction) {
   try {
@@ -48,7 +61,7 @@ export async function postTelemetry(req: Request, res: Response, next: NextFunct
 export async function getRealtimeByCollar(req: Request, res: Response, next: NextFunction) {
   try {
     const collarId = ensureString(req.params.collarId, "collarId (UUID)");
-    const tenantId = req.query.tenantId ? String(req.query.tenantId) : undefined;
+    const tenantId = getQueryParamString(req.query.tenantId);
 
     const snapshot = await getRealtimeTelemetryByCollar(collarId, tenantId);
 
@@ -68,10 +81,10 @@ export async function getRealtimeByCollar(req: Request, res: Response, next: Nex
 export async function getHistoricalByCollar(req: Request, res: Response, next: NextFunction) {
   try {
     const collarId = ensureString(req.params.collarId, "collarId (UUID)");
-    const tenantId = req.query.tenantId ? String(req.query.tenantId) : undefined;
+    const tenantId = getQueryParamString(req.query.tenantId);
 
-    const from = req.query.from ? String(req.query.from) : undefined;
-    const to = req.query.to ? String(req.query.to) : undefined;
+    const from = getQueryParamString(req.query.from);
+    const to = getQueryParamString(req.query.to);
     const limit = optionalNumber(req.query.limit);
     const page = optionalNumber(req.query.page);
 
@@ -179,7 +192,7 @@ export async function getProducerCollarsTelemetry(
 ) {
   try {
     const producerId = ensureString(req.params.producerId, "producerId");
-    const tenantId = req.query.tenantId ? String(req.query.tenantId) : undefined;
+    const tenantId = getQueryParamString(req.query.tenantId);
 
     const result = await getLatestTelemetryForProducerCollars(producerId, tenantId);
 
@@ -194,21 +207,40 @@ export async function getProducerCollarsTelemetry(
   }
 }
 
-// Stream SSE con la telemetría en Redis de todos los collares asignados a un tenant
-export async function streamTenantCollarsFromRedis(
+// Snapshot en tiempo real (Redis) de todos los collares de un rancho UPP
+export async function getUppRealtimeFromRedis(
   req: Request,
   res: Response,
   next: NextFunction
 ) {
   try {
-    const tenantId = ensureString(req.params.tenantId, "tenantId");
+    const uppId = ensureString(req.params.uppId, "uppId");
+    const tenantId = getQueryParamString(req.query.tenantId);
+
+    const snapshot = await getUppRealtimeSnapshotFromRedis(uppId, tenantId);
+
+    res.json(snapshot);
+  } catch (err) {
+    next(err);
+  }
+}
+
+// Stream SSE con la telemetría en Redis de todos los collares asignados a un rancho UPP
+export async function streamUppCollarsFromRedis(
+  req: Request,
+  res: Response,
+  next: NextFunction
+) {
+  try {
+    const uppId = ensureString(req.params.uppId, "uppId");
+    const tenantId = getQueryParamString(req.query.tenantId);
 
     res.setHeader("Content-Type", "text/event-stream");
     res.setHeader("Cache-Control", "no-cache");
     res.setHeader("Connection", "keep-alive");
 
     const sendSnapshot = async () => {
-      const snapshot = await getTenantRealtimeSnapshotFromRedis(tenantId);
+      const snapshot = await getUppRealtimeSnapshotFromRedis(uppId, tenantId);
       res.write(`data: ${JSON.stringify(snapshot)}\n\n`);
     };
 
@@ -219,12 +251,44 @@ export async function streamTenantCollarsFromRedis(
       try {
         await sendSnapshot();
       } catch (err) {
-        console.error("[SSE tenant] Error obteniendo snapshot de Redis:", err);
+        console.error("[SSE upp] Error obteniendo snapshot de Redis:", err);
       }
     }, 30000); // cada 30 segundos
 
     req.on("close", () => {
       clearInterval(interval);
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// Histórico Postgres de telemetría para todos los collares de un rancho UPP
+export async function getHistoricalByUpp(req: Request, res: Response, next: NextFunction) {
+  try {
+    const uppId = ensureString(req.params.uppId, "uppId");
+    const tenantId = getQueryParamString(req.query.tenantId);
+
+    const from = getQueryParamString(req.query.from);
+    const to = getQueryParamString(req.query.to);
+    const limit = optionalNumber(req.query.limit);
+    const page = optionalNumber(req.query.page);
+
+    const result = await getHistoricalTelemetryByUpp(
+      uppId,
+      {
+        from,
+        to,
+        limit,
+        page,
+      },
+      tenantId
+    );
+
+    res.json({
+      uppId,
+      tenantId: tenantId ?? null,
+      ...result,
     });
   } catch (err) {
     next(err);
